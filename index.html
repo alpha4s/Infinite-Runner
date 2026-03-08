@@ -314,7 +314,12 @@
             </div>
             <div class="stat-line"><span>Max Coins:</span> <span class="stat-value" id="menu-max-coins">0</span></div>
         </div>
-        <div class="menu-title">SPIN</div>
+        <div class="menu-title" style="margin-bottom: 10px;">SPIN</div>
+        <div
+            style="color: rgba(255,255,255,0.7); font-size: 16px; margin-bottom: 30px; text-align: center; line-height: 1.5;">
+            <b>CONTROLS:</b> Use WASD or Arrows to Move & Jump.<br>
+            Double-tap Space in mid-air to fast fall.
+        </div>
         <button class="menu-btn" id="btn-start">START RUN</button>
         <button class="menu-btn" id="btn-shop">UPGRADES SHOP</button>
         <div style="display: flex; gap: 10px; margin-top: 10px; align-items: center;">
@@ -702,6 +707,7 @@
                 this.coinMat = new THREE.MeshLambertMaterial({ color: 0xffd700, emissive: 0xffaa00, emissiveIntensity: 3.0 });
 
                 this.sBarrierGeo = new THREE.BoxGeometry(2, 1.0, 0.5);
+                this.tBarrierGeo = new THREE.BoxGeometry(2, 3.0, 0.5);
                 this.barrierMat = new THREE.MeshLambertMaterial({ color: 0xff3333, transparent: true, opacity: 0.75 });
                 this.obstacleHalfWidth = 1;
 
@@ -1922,49 +1928,57 @@
             }
 
             checkEntityCollisions(ent) {
-                let hit = false;
-                const px = this.player.mesh.position.x;
-                const py = this.player.mesh.position.y;
-                const pz = this.player.mesh.position.z;
+                const pPos = this.player.mesh.position;
+                const ePos = ent.position;
+                const type = ent.userData.type;
 
-                // Precalculate Z-distance (the most common check) since it's universally needed
-                const zDist = Math.abs(pz - ent.position.z);
-                const xDist = Math.abs(px - ent.position.x);
+                // 1. HORIZONTAL DISTANCES
+                const dx = pPos.x - ePos.x;
+                const dz = pPos.z - ePos.z;
+                const distSq = dx * dx + dz * dz;
 
-                if (ent.userData.type === 'ramp') {
-                    if (zDist < 1.0 && xDist < 1.5) { // Roughly 1 unit cube
-                        if (!this.player.isJumping || py < 1.5) {
+                // 2. VERTICAL RANGE (Shrunk for fairness)
+                const playerBottom = pPos.y - 0.25;
+                const playerTop = pPos.y + 0.25;
+
+                // --- NAIVE RADIAL LOGIC ---
+
+                if (type === 'obstacle') {
+                    const wallRadius = 1.1;
+                    const wallHeight = ent.userData.isTall ? 3.0 : 0.8;
+                    if (distSq < wallRadius * wallRadius) {
+                        if (playerBottom < wallHeight) return true;
+                    }
+                }
+
+                else if (type === 'traffic') {
+                    if (Math.abs(dx) < 0.9 && Math.abs(dz) < 2.5) {
+                        if (playerBottom < 1.1) return true;
+                    }
+                }
+
+                else if (type === 'laser') {
+                    const beamY = ent.position.y + ent.userData.beam.position.y;
+                    if (Math.abs(dz) < 0.8) {
+                        if (beamY > playerBottom && beamY < playerTop) return true;
+                    }
+                }
+
+                else if (type === 'ramp') {
+                    if (Math.abs(dz) < 1.5 && Math.abs(dx) < 1.2) {
+                        if (pPos.y < 1.2) {
                             this.player.isJumping = true;
                             this.player.jumpVelocity = JUMP_FORCE * RAMP_BOOST_MULTIPLIER;
                         }
                     }
-                } else if (ent.userData.type === 'laser') {
-                    if (xDist < 3.75 && zDist < 1.5) {
-                        if (ent.userData.activeTop) {
-                            if ((py + PLAYER_BOX_SIZE) > 1.8) hit = true;
-                        } else {
-                            if ((py - PLAYER_BOX_SIZE) < 1.2) hit = true;
-                        }
-                    }
-                } else if (ent.userData.type === 'traffic') {
-                    if (xDist < 0.9 && zDist < 2.5 && py - PLAYER_BOX_SIZE < 1.2) hit = true;
-                } else if (ent.userData.type === 'obstacle') {
-                    const oHeight = ent.userData.isTall ? 3.0 : 1.0;
-                    if (xDist < this.obstacleHalfWidth && zDist < 1.5 && py - PLAYER_BOX_SIZE < oHeight) hit = true;
-                } else if (ent.userData.type === 'coin' || ent.userData.isPowerup) {
-                    let hitRadius;
-                    if (ent.userData.isPowerup) hitRadius = POWERUP_HIT_RADIUS;
-                    // Force tracked magnetic coins to physically reach the player so they visually "fly in"
-                    else if (ent.userData.isTrackedByMagnet) hitRadius = 1.2;
-                    else hitRadius = COIN_HIT_RADIUS;
-
-                    // Simple AABB box check instead of spherical
-                    if (zDist < hitRadius && xDist < hitRadius && Math.abs(py - ent.position.y) < hitRadius) {
-                        hit = true;
-                    }
                 }
 
-                return hit;
+                else if (type === 'coin' || ent.userData.isPowerup) {
+                    const collectRadius = ent.userData.isTrackedByMagnet ? 1.8 : 1.2;
+                    if (pPos.distanceToSquared(ePos) < collectRadius * collectRadius) return true;
+                }
+
+                return false;
             }
 
             handleEntityHit(ent, i) {
