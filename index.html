@@ -355,7 +355,7 @@
         const LANE_WIDTH = 2.5;
         const GROUND_LEVEL = 0.5;
 
-        const BASE_SPEED = .6;
+        const BASE_SPEED = .4;
         const MAX_SPEED = 1.8;
         const JUMP_FORCE = 0.4;
         const GRAVITY = -0.03;
@@ -499,9 +499,26 @@
                 });
                 this.mesh = new THREE.Mesh(geo, this.mat);
                 this.mesh.position.set(0, GROUND_LEVEL, 0);
-                this.mesh.castShadow = true;
-                this.mesh.receiveShadow = true;
                 this.scene.add(this.mesh);
+
+                // Player Shadow Sprite (Blob)
+                // Using a simple circular gradient texture
+                const sCanvas = document.createElement('canvas');
+                sCanvas.width = 64; sCanvas.height = 64;
+                const sCtx = sCanvas.getContext('2d');
+                const grad = sCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+                grad.addColorStop(0, 'rgba(0,0,0,0.5)');
+                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                sCtx.fillStyle = grad;
+                sCtx.fillRect(0, 0, 64, 64);
+                const sTex = new THREE.CanvasTexture(sCanvas);
+                this.shadow = new THREE.Mesh(
+                    new THREE.PlaneGeometry(2.5, 2.5),
+                    new THREE.MeshBasicMaterial({ map: sTex, transparent: true, opacity: 0.6, depthWrite: false })
+                );
+                this.shadow.rotation.x = -Math.PI / 2;
+                this.shadow.position.y = 0.05;
+                this.scene.add(this.shadow);
 
                 this.currentLane = 0;
                 this.targetX = 0;
@@ -599,6 +616,13 @@
                 const previousX = this.mesh.position.x;
                 this.mesh.position.x += (this.targetX - this.mesh.position.x) * LANE_SWAP_SPEED;
 
+                // Sync Shadow Position (Don't follow jump height, stay on ground)
+                this.shadow.position.x = this.mesh.position.x;
+                // Scale shadow slightly as player jumps to simulate light falloff
+                const jumpScale = 1.0 - (Math.max(0, this.mesh.position.y - GROUND_LEVEL) / 10);
+                this.shadow.scale.set(jumpScale, jumpScale, 1);
+                this.shadow.material.opacity = 0.6 * jumpScale;
+
                 // Calculate sideways sway based on actual movement delta
                 const deltaX = this.mesh.position.x - previousX;
 
@@ -688,15 +712,9 @@
 
                 this.entities = [];
                 this.pools = {
-                    traffic: [], ramp: [], laser: [], heart: [], shield: [], magnet: []
+                    traffic: [], ramp: [], laser: [], heart: [], shield: [], magnet: [],
+                    coin: [], sObs: [], tObs: []
                 };
-                this.logicalPool = [];
-                for (let i = 0; i < 500; i++) {
-                    this.logicalPool.push({
-                        userData: {},
-                        position: new THREE.Vector3()
-                    });
-                }
                 this.coinShadowPool = [];
                 this.laneArr = [-1, 0, 1];
                 this.tempVec = new THREE.Vector3();
@@ -708,28 +726,74 @@
 
                 this.sBarrierGeo = new THREE.BoxGeometry(2, 1.0, 0.5);
                 this.tBarrierGeo = new THREE.BoxGeometry(2, 3.0, 0.5);
-                this.barrierMat = new THREE.MeshLambertMaterial({ color: 0xff3333, transparent: true, opacity: 0.75 });
+                this.barrierMat = new THREE.MeshLambertMaterial({ color: 0xff3333, emissive: 0x440000, transparent: true, opacity: 0.85 });
                 this.obstacleHalfWidth = 1;
-
-                this.coinInst = new THREE.InstancedMesh(this.coinGeo, this.coinMat, 300);
-                this.coinInst.count = 0;
-                this.scene.add(this.coinInst);
-
-                this.sObsInst = new THREE.InstancedMesh(this.sBarrierGeo, this.barrierMat, 100);
-                this.sObsInst.count = 0;
-                this.sObsInst.castShadow = true;
-                this.sObsInst.receiveShadow = true;
-                this.scene.add(this.sObsInst);
-
-                this.tObsInst = new THREE.InstancedMesh(this.tBarrierGeo, this.barrierMat, 100);
-                this.tObsInst.count = 0;
-                this.tObsInst.castShadow = true;
-                this.tObsInst.receiveShadow = true;
-                this.scene.add(this.tObsInst);
 
                 this.rampMat = new THREE.MeshLambertMaterial({ color: 0xffff00 });
                 this.rampBaseGeo = new THREE.BoxGeometry(2, 0.4, 0.4);
                 this.rampPadGeo = new THREE.BoxGeometry(2, 0.2, 1.5);
+                this.arrowGeo = new THREE.CylinderGeometry(0, 0.6, 1.2, 3);
+                this.arrowMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+
+                // GLOW SPRITE SYSTEM (Bloom Replacement)
+                const canvas = document.createElement('canvas');
+                canvas.width = 64; canvas.height = 64;
+                const context = canvas.getContext('2d');
+                const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+                gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+                gradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.4)');
+                gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                context.fillStyle = gradient;
+                context.fillRect(0, 0, 64, 64);
+                this.glowTexture = new THREE.CanvasTexture(canvas);
+
+                this.glowMatCoin = new THREE.SpriteMaterial({ map: this.glowTexture, color: 0xffd700, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.8 });
+                this.glowMatLaser = new THREE.SpriteMaterial({ map: this.glowTexture, color: 0xff0000, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.9 });
+                this.glowMatPower = new THREE.SpriteMaterial({ map: this.glowTexture, color: 0x00ffff, blending: THREE.AdditiveBlending, transparent: true, opacity: 0.8 });
+                this.glowPool = [];
+
+                // SHADOW SPRITE MATERIALS
+                this.shadowPlaneGeo = new THREE.PlaneGeometry(6, 6);
+                this.shadowPlaneGeo.rotateX(-Math.PI / 2);
+
+                const createShadowTex = (type) => {
+                    const c = document.createElement('canvas');
+                    c.width = 128; c.height = 128;
+                    const ctx = c.getContext('2d');
+                    ctx.fillStyle = 'rgba(0,0,0,0)';
+                    ctx.fillRect(0, 0, 128, 128);
+
+                    if (type === 'tree') {
+                        const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+                        grad.addColorStop(0, 'rgba(0,0,0,0.5)');
+                        grad.addColorStop(1, 'rgba(0,0,0,0)');
+                        ctx.fillStyle = grad;
+                        ctx.beginPath();
+                        ctx.ellipse(64, 64, 25, 55, 0, 0, Math.PI * 2);
+                        ctx.fill();
+                    } else if (type === 'rock') {
+                        const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+                        grad.addColorStop(0, 'rgba(0,0,0,0.4)');
+                        grad.addColorStop(1, 'rgba(0,0,0,0)');
+                        ctx.fillStyle = grad;
+                        ctx.beginPath();
+                        ctx.ellipse(64, 64, 55, 35, 0.4, 0, Math.PI * 2);
+                        ctx.fill();
+                    } else { // blob
+                        const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+                        grad.addColorStop(0, 'rgba(0,0,0,0.4)');
+                        grad.addColorStop(1, 'rgba(0,0,0,0)');
+                        ctx.fillStyle = grad;
+                        ctx.beginPath();
+                        ctx.arc(64, 64, 55, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                    return new THREE.CanvasTexture(c);
+                };
+
+                this.shadowMatTree = new THREE.MeshBasicMaterial({ map: createShadowTex('tree'), transparent: true, depthWrite: false, opacity: 0.5 });
+                this.shadowMatRock = new THREE.MeshBasicMaterial({ map: createShadowTex('rock'), transparent: true, depthWrite: false, opacity: 0.5 });
+                this.shadowMatBlob = new THREE.MeshBasicMaterial({ map: createShadowTex('blob'), transparent: true, depthWrite: false, opacity: 0.5 });
 
                 this.laserPoleGeo = new THREE.CylinderGeometry(0.2, 0.2, 3.0, 6);
                 this.laserBeamGeo = new THREE.CylinderGeometry(0.15, 0.15, 7.5, 6);
@@ -739,9 +803,6 @@
 
                 this.trafficGeo = new THREE.BoxGeometry(2, 1.2, 2.5);
                 this.trafficMat = new THREE.MeshLambertMaterial({ color: 0xff8800, emissive: 0xff4400, emissiveIntensity: 3.0 });
-
-                this.arrowGeo = new THREE.ConeGeometry(0.3, 0.8, 6);
-                this.arrowMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
 
                 const extrudeSettings = { depth: 0.15, bevelEnabled: true, bevelSegments: 2, steps: 1, bevelSize: 0.03, bevelThickness: 0.03 };
 
@@ -793,30 +854,12 @@
                 this.dropShadowGeo = new THREE.PlaneGeometry(1.2, 1.2);
                 this.dropShadowGeo.rotateX(-Math.PI / 2);
 
-                // Lazy load baked shadows to avoid main-thread lockup
-                this.bakedShadowMats = {
-                    coin: null,
-                    heart: null,
-                    shield: null,
-                    magnet: null
-                };
-
-                // Schedule expensive bakery after the first frame to fix Interaction-To-Next-Paint (INP) delay
-                setTimeout(() => {
-                    this.bakedShadowMats.coin = this.bakeShadowTexture(this.coinGeo);
-                    this.bakedShadowMats.heart = this.bakeShadowTexture(heartGeo);
-                    this.bakedShadowMats.shield = this.bakeShadowTexture(shieldGeo);
-                    this.bakedShadowMats.magnet = this.bakeShadowTexture(magnetGeo);
-                    this.prewarmPools();
-                }, 100);
+                this.prewarmPools();
 
                 this.nextPatternZ = -150;
                 this.nextPowerupDistance = 0;
 
-                // Reusable matrices — hoisted from update() to avoid per-frame allocations
-                this._m4 = new THREE.Matrix4();
-                this._mScale0 = new THREE.Matrix4().makeScale(0, 0, 0);
-
+                // Reusable objects for updates
                 this.cells = [];
                 this.glbModels = {};
                 this.pebbles = [];
@@ -826,13 +869,66 @@
             }
 
             prewarmPools() {
+                // Prewarm Coins
+                for (let i = 0; i < 150; i++) {
+                    const mesh = new THREE.Mesh(this.coinGeo, this.coinMat);
+                    mesh.userData = { type: 'coin' };
+
+                    // Add Sprite Glow
+                    const glow = new THREE.Sprite(this.glowMatCoin);
+                    glow.scale.set(1.4, 1.4, 1);
+                    mesh.add(glow);
+                    mesh.userData.glow = glow;
+
+                    mesh.visible = false;
+
+                    // Add standard drop shadow
+                    const shadow = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
+                    shadow.position.y = -0.5 + 0.01;
+                    mesh.add(shadow);
+
+                    this.scene.add(mesh);
+                    this.pools.coin.push(mesh);
+                }
+
+                // Prewarm Obstacles
+                for (let i = 0; i < 50; i++) {
+                    const meshS = new THREE.Mesh(this.sBarrierGeo, this.barrierMat);
+                    meshS.userData = { type: 'obstacle', isTall: false };
+
+                    // Add standard drop shadow
+                    const shadowS = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
+                    shadowS.position.y = -0.5 + 0.01;
+                    meshS.add(shadowS);
+
+                    meshS.visible = false;
+                    this.scene.add(meshS);
+                    this.pools.sObs.push(meshS);
+
+                    const meshT = new THREE.Mesh(this.tBarrierGeo, this.barrierMat);
+                    meshT.userData = { type: 'obstacle', isTall: true };
+
+                    // Add standard drop shadow
+                    const shadowT = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
+                    shadowT.position.y = -1.5 + 0.01;
+                    meshT.add(shadowT);
+
+                    meshT.visible = false;
+                    this.scene.add(meshT);
+                    this.pools.tObs.push(meshT);
+                }
+
                 // Prewarm Traffic
                 for (let i = 0; i < 15; i++) {
                     const mesh = new THREE.Mesh(this.trafficGeo, this.trafficMat);
-                    mesh.castShadow = true;
-                    mesh.receiveShadow = true;
                     mesh.visible = false;
                     mesh.userData = { type: 'traffic' };
+
+                    const shadow = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
+                    shadow.position.set(0, -0.6 + 0.01, 0);
+                    shadow.scale.set(1.5, 2.5, 1);
+                    mesh.add(shadow);
+
                     this.scene.add(mesh);
                     this.pools.traffic.push(mesh);
                 }
@@ -842,20 +938,15 @@
                     const group = new THREE.Group();
                     const base = new THREE.Mesh(this.rampBaseGeo, this.rampMat);
                     base.position.set(0, 0, 0.5);
-                    base.castShadow = true;
-                    base.receiveShadow = true;
                     group.add(base);
 
                     const pad = new THREE.Mesh(this.rampPadGeo, this.rampMat);
                     pad.position.set(0, 0.3, 0);
                     pad.rotation.x = -Math.PI / 8;
-                    pad.castShadow = true;
-                    pad.receiveShadow = true;
                     group.add(pad);
 
                     const arrow = new THREE.Mesh(this.arrowGeo, this.arrowMat);
                     arrow.position.set(0, 2.0, 0);
-                    arrow.castShadow = true;
                     group.add(arrow);
 
                     group.userData = { type: 'ramp', arrow: arrow };
@@ -869,20 +960,26 @@
                     const group = new THREE.Group();
                     const pole1 = new THREE.Mesh(this.laserPoleGeo, this.laserPoleMat);
                     pole1.position.set(-3.75, -0.0, 0);
-                    pole1.castShadow = true;
-                    pole1.receiveShadow = true;
                     group.add(pole1);
 
                     const pole2 = new THREE.Mesh(this.laserPoleGeo, this.laserPoleMat);
                     pole2.position.set(3.75, -0.0, 0);
-                    pole2.castShadow = true;
-                    pole2.receiveShadow = true;
                     group.add(pole2);
 
                     const beam = new THREE.Mesh(this.laserBeamGeo, this.laserBeamMat);
                     beam.position.set(0, 0, 0);
-                    beam.castShadow = true;
                     group.add(beam);
+
+                    // Multi-point Glow for Laser
+                    const glow1 = new THREE.Sprite(this.glowMatLaser);
+                    glow1.scale.set(4, 2, 1);
+                    glow1.position.set(-2, 0, 0);
+                    beam.add(glow1);
+
+                    const glow2 = new THREE.Sprite(this.glowMatLaser);
+                    glow2.scale.set(4, 2, 1);
+                    glow2.position.set(2, 0, 0);
+                    beam.add(glow2);
 
                     group.userData = { type: 'laser', timer: 0, speedMod: 1, isTop: true, beam: beam };
                     group.visible = false;
@@ -891,18 +988,19 @@
                 }
 
                 // Prewarm Powerups
-                const types = ['heart', 'shield', 'magnet'];
-                for (const pType of types) {
+                const pTypes = ['heart', 'shield', 'magnet'];
+                for (const pType of pTypes) {
                     for (let i = 0; i < 5; i++) {
                         const group = new THREE.Group();
                         const mesh = new THREE.Mesh(this.powerupGeos[pType], this.powerupMats[pType]);
-                        mesh.castShadow = false;
-                        mesh.receiveShadow = false;
                         group.add(mesh);
 
-                        const shadow = new THREE.Mesh(this.dropShadowGeo, this.bakedShadowMats[pType]);
+                        const glow = new THREE.Sprite(this.glowMatPower);
+                        glow.scale.set(2.5, 2.5, 1);
+                        group.add(glow);
+
+                        const shadow = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
                         shadow.position.y = -1.0 + 0.01;
-                        shadow.visible = true;
                         group.add(shadow);
 
                         group.userData = { type: pType, isPowerup: true };
@@ -911,15 +1009,8 @@
                         this.pools[pType].push(group);
                     }
                 }
-
-                // Prewarm Coin Shadows
-                for (let i = 0; i < 100; i++) {
-                    const shadowBox = new THREE.Mesh(this.dropShadowGeo, this.bakedShadowMats.coin);
-                    shadowBox.visible = false;
-                    this.scene.add(shadowBox);
-                    this.coinShadowPool.push(shadowBox);
-                }
             }
+
 
             createCells() {
                 // Shared geometry & materials
@@ -1228,19 +1319,33 @@
                                 mat.userData.role = part.role;
 
                                 const instMesh = new THREE.InstancedMesh(part.geometry, mat, count);
-                                instMesh.castShadow = true;
+                                instMesh.castShadow = false;
                                 instMesh.receiveShadow = true;
 
                                 // Dead trees are hidden in non-desert biomes initially
                                 if (modelKey.startsWith('dead')) instMesh.visible = false;
 
+                                // Shadow Sprite companion
+                                let shadowMat = this.shadowMatBlob;
+                                if (modelKey.includes('Tree')) shadowMat = this.shadowMatTree;
+                                else if (modelKey.includes('rock')) shadowMat = this.shadowMatRock;
+
+                                const shadowInst = new THREE.InstancedMesh(this.shadowPlaneGeo, shadowMat, count);
+                                shadowInst.position.y = 0.06; // Avoid Z-fighting with ground
+                                shadowInst.visible = instMesh.visible;
+
                                 for (let i = 0; i < count; i++) {
                                     instMesh.setMatrixAt(i, matrices[i]);
+                                    shadowInst.setMatrixAt(i, matrices[i]);
                                 }
 
                                 instMesh.userData.key = `${modelKey}_${partIdx}`;
                                 this.scene.add(instMesh);
                                 cell.instancedMeshesArray.push(instMesh);
+
+                                shadowInst.userData.key = instMesh.userData.key + '_shadow';
+                                this.scene.add(shadowInst);
+                                cell.instancedMeshesArray.push(shadowInst);
                             });
                         });
                     }
@@ -1297,17 +1402,17 @@
                     inst.position.z += deltaZ;
 
                     // Update visibility
-                    if (key === 'dunes') {
+                    if (key === 'dunes' || key === 'dunes_shadow') {
                         inst.visible = isDesert;
                         continue;
                     }
                     if (key === 'pebbles') continue; // Always visible, don't colorize
 
-                    if (key.startsWith('normalTree')) {
+                    if (key.includes('normalTree')) {
                         inst.visible = !isDesert && !isOcean;
-                    } else if (key.startsWith('deadTree')) {
+                    } else if (key.includes('deadTree')) {
                         inst.visible = isDesert;
-                    } else if (key.startsWith('grass') || key.startsWith('bush')) {
+                    } else if (key.includes('grass') || key.includes('bush')) {
                         inst.visible = !isOcean;
                     } else {
                         // rocks
@@ -1315,7 +1420,7 @@
                     }
 
                     // Apply biome colors to shared materials
-                    if (palette && inst.material) {
+                    if (palette && inst.material && !key.includes('_shadow')) { // Don't colorize shadow sprites
                         const role = inst.material.userData.role;
                         const color = palette[role];
                         if (color !== undefined) {
@@ -1324,6 +1429,7 @@
                     }
                 }
             }
+
 
             repositionCell(cell, newZStart) {
                 const deltaZ = newZStart - cell.zStart;
@@ -1335,97 +1441,61 @@
                     cell.instancedMeshesArray[i].position.z += deltaZ;
                 }
             }
-
-            bakeShadowTexture(geometry) {
-                const rt = new THREE.WebGLRenderTarget(128, 128, { format: THREE.RGBAFormat });
-                const rtCamera = new THREE.OrthographicCamera(-0.6, 0.6, 0.6, -0.6, 0.1, 10);
-                rtCamera.position.set(0, 0, 5);
-                rtCamera.lookAt(0, 0, 0);
-
-                const rtScene = new THREE.Scene();
-                const mat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-                const mesh = new THREE.Mesh(geometry, mat);
-                rtScene.add(mesh);
-
-                const oldClearColor = new THREE.Color();
-                const oldClearAlpha = this.gm.renderer.getClearAlpha();
-                this.gm.renderer.getClearColor(oldClearColor);
-
-                this.gm.renderer.setClearColor(0x000000, 0);
-                this.gm.renderer.setRenderTarget(rt);
-                this.gm.renderer.render(rtScene, rtCamera);
-                this.gm.renderer.setRenderTarget(null);
-                this.gm.renderer.setClearColor(oldClearColor, oldClearAlpha);
-
-                return new THREE.MeshBasicMaterial({
-                    map: rt.texture,
-                    transparent: true,
-                    opacity: 0.5,
-                    depthWrite: false
-                });
-            }
-
-
-
             getLanes() {
                 // A readable array shuffle
                 return [-1, 0, 1].sort(() => Math.random() - 0.5);
             }
 
             createCoin(laneIdx, z, isHigh = false) {
-                const idx = this.coinInst.count++;
-                if (idx >= 300) return; // Pool exhausted
-
                 const hitY = isHigh ? 2.5 : 0.5;
-                let shadowBox = null;
+                let ent;
+                if (this.pools.coin.length > 0) {
+                    ent = this.pools.coin.pop();
+                    ent.visible = true;
+                } else {
+                    ent = new THREE.Mesh(this.coinGeo, this.coinMat);
+                    ent.userData = { type: 'coin' };
 
-                if (!isHigh && this.coinShadowPool.length > 0) {
-                    shadowBox = this.coinShadowPool.pop();
-                    shadowBox.visible = true;
-                } else if (!isHigh) {
-                    // Fallback if pool empty but we need shadow
-                    const shadowMat = this.bakedShadowMats.coin ? this.bakedShadowMats.coin : new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.5 });
-                    shadowBox = new THREE.Mesh(this.dropShadowGeo, shadowMat);
-                    shadowBox.rotation.x = -Math.PI / 2;
-                    if (!this.bakedShadowMats.coin) shadowBox.visible = false;
-                    this.scene.add(shadowBox);
+                    // Add Sprite Glow
+                    const glow = new THREE.Sprite(this.glowMatCoin);
+                    glow.scale.set(1.4, 1.4, 1);
+                    ent.add(glow);
+                    ent.userData.glow = glow;
+
+                    // Add Drop Shadow
+                    const shadow = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
+                    shadow.position.y = -0.5 + 0.01;
+                    ent.add(shadow);
+
+                    this.scene.add(ent);
                 }
 
-                // Pluck from logical pool to eliminate Object and Vector3 GC
-                let ent = this.logicalPool.pop();
-
-                ent.userData.type = 'coin';
-                ent.userData.isBatched = true;
-                ent.userData.instIdx = idx;
-                ent.userData.baseRotationY = 0;
-                ent.userData.shadowMesh = shadowBox;
-                ent.position.set(laneIdx * 2.5, hitY, z);
-
-                if (shadowBox) {
-                    shadowBox.position.set(laneIdx * 2.5, 0.01, z);
-                }
+                ent.position.set(laneIdx * LANE_WIDTH, hitY, z);
                 this.entities.push(ent);
             }
 
             createObstacle(laneIdx, z, isTall) {
-                const inst = isTall ? this.tObsInst : this.sObsInst;
-                const idx = inst.count++;
-                if (idx >= 100) return;
-
                 const hitY = isTall ? 1.5 : 0.5;
+                let ent;
+                const pool = isTall ? this.pools.tObs : this.pools.sObs;
 
-                let ent = this.logicalPool.pop();
-                if (!ent) {
-                    ent = { userData: {}, position: new THREE.Vector3() };
+                if (pool.length > 0) {
+                    ent = pool.pop();
+                    ent.visible = true;
+                } else {
+                    const geo = isTall ? this.tBarrierGeo : this.sBarrierGeo;
+                    ent = new THREE.Mesh(geo, this.barrierMat);
+                    ent.userData = { type: 'obstacle', isTall: isTall };
+
+                    // Add standard drop shadow
+                    const shadow = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
+                    shadow.position.y = isTall ? (-1.5 + 0.01) : (-0.5 + 0.01);
+                    ent.add(shadow);
+
+                    this.scene.add(ent);
                 }
 
-                ent.userData.type = 'obstacle';
-                ent.userData.isBatched = true;
-                ent.userData.isTall = isTall;
-                ent.userData.instIdx = idx;
-                ent.userData.baseRotationY = 0; // Fix sideways obstacles when recycling coins
-                ent.position.set(laneIdx * 2.5, hitY, z);
-
+                ent.position.set(laneIdx * LANE_WIDTH, hitY, z);
                 this.entities.push(ent);
             }
 
@@ -1436,12 +1506,17 @@
                     mesh.visible = true;
                 } else {
                     mesh = new THREE.Mesh(this.trafficGeo, this.trafficMat);
-                    mesh.castShadow = true;
-                    mesh.receiveShadow = true;
+                    mesh.userData = { type: 'traffic' };
+
+                    // Add standard drop shadow
+                    const shadow = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
+                    shadow.position.set(0, -0.6 + 0.01, 0);
+                    shadow.scale.set(1.5, 2.5, 1);
+                    mesh.add(shadow);
+
                     this.scene.add(mesh);
                 }
                 mesh.position.set(laneIdx * LANE_WIDTH, 0.6, z);
-                mesh.userData = { type: 'traffic' };
                 this.entities.push(mesh);
             }
 
@@ -1468,10 +1543,16 @@
 
                     const arrow = new THREE.Mesh(this.arrowGeo, this.arrowMat);
                     arrow.position.set(0, 2.0, 0);
-                    arrow.castShadow = true;
                     group.add(arrow);
 
                     group.userData = { type: 'ramp', arrow: arrow };
+
+                    // Add Baked Shadow for grounding
+                    const shadow = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
+                    shadow.scale.set(1.5, 2.0, 1);
+                    shadow.position.set(0, -0.2 + 0.01, 0.5);
+                    group.add(shadow);
+
                     this.scene.add(group);
                 }
                 group.position.set(laneIdx * LANE_WIDTH, 0.2, z);
@@ -1508,8 +1589,27 @@
 
                     const beam = new THREE.Mesh(this.laserBeamGeo, this.laserBeamMat);
                     beam.position.set(0, initialY, 0);
-                    beam.castShadow = true;
                     group.add(beam);
+
+                    // Add Baked Shadows for poles
+                    const shadow1 = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
+                    shadow1.position.set(-3.75, -1.5 + 0.01, 0);
+                    group.add(shadow1);
+
+                    const shadow2 = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
+                    shadow2.position.set(3.75, -1.5 + 0.01, 0);
+                    group.add(shadow2);
+
+                    // Multi-point Glow for Laser
+                    const glow1 = new THREE.Sprite(this.glowMatLaser);
+                    glow1.scale.set(4, 2, 1);
+                    glow1.position.set(-2, 0, 0);
+                    beam.add(glow1);
+
+                    const glow2 = new THREE.Sprite(this.glowMatLaser);
+                    glow2.scale.set(4, 2, 1);
+                    glow2.position.set(2, 0, 0);
+                    beam.add(glow2);
 
                     group.userData = { type: 'laser', timer: 0, speedMod: speedMod, isTop: isTop, beam: beam };
                     this.scene.add(group);
@@ -1532,12 +1632,13 @@
                     const mesh = new THREE.Mesh(this.powerupGeos[pType], this.powerupMats[pType]);
                     group.add(mesh);
 
-                    const shadow = new THREE.Mesh(this.dropShadowGeo, this.bakedShadowMats[pType]);
+                    const glow = new THREE.Sprite(this.glowMatPower);
+                    glow.scale.set(2.5, 2.5, 1);
+                    group.add(glow);
+
+                    const shadow = new THREE.Mesh(this.dropShadowGeo, this.shadowMatBlob);
                     shadow.position.y = -1.0 + 0.01;
                     group.add(shadow);
-
-                    // Fallback to invisible until texture finishes baking
-                    if (!this.bakedShadowMats[pType]) shadow.visible = false;
 
                     this.scene.add(group);
                 }
@@ -1722,9 +1823,9 @@
                     case 'LASER_STAIRS':
                         // Jump over laser -> land -> immediately fast fall under low wall -> jump next laser
                         this.createLaser(pz); // Requires jump
-                        this.createObstacle(-1, pz - (12 * speedMultiplier), true);
-                        this.createObstacle(1, pz - (12 * speedMultiplier), true);
-                        this.createObstacle(0, pz - (12 * speedMultiplier), true); // High walls all lanes, MUST fast fall if jumping
+                        this.createObstacle(-1, pz - (12 * speedMultiplier), false);
+                        this.createObstacle(1, pz - (12 * speedMultiplier), false);
+                        this.createObstacle(0, pz - (12 * speedMultiplier), false); // Use jumpable walls for this tight sequence
                         this.createLaser(pz - (24 * speedMultiplier)); // Jump again
                         spacing = 40;
                         break;
@@ -1797,7 +1898,34 @@
                 }
 
                 // Cell-based scenery scrolling & recycling
-                this.scrollCells(this.gm.gameSpeed, target);
+                for (let c = 0; c < this.cells.length; c++) {
+                    const cell = this.cells[c];
+
+                    // Scroll every object in this cell via its InstancedMesh container
+                    for (let i = 0; i < cell.instancedMeshesArray.length; i++) {
+                        const inst = cell.instancedMeshesArray[i];
+                        inst.position.z += this.gm.gameSpeed;
+                    }
+
+                    cell.zStart += this.gm.gameSpeed;
+                    cell.zEnd += this.gm.gameSpeed;
+
+                    // Recycle cell once its trailing edge passes the camera
+                    if (cell.zStart > 15) {
+                        // Find the backmost cell to place behind it
+                        let backZ = Infinity;
+                        for (let j = 0; j < this.cells.length; j++) {
+                            if (j !== c && this.cells[j].zStart < backZ) backZ = this.cells[j].zStart;
+                        }
+                        const newZ = backZ - CELL_DEPTH;
+
+                        if (target) {
+                            this.recycleCell(cell, newZ, target);
+                        } else {
+                            this.repositionCell(cell, newZ);
+                        }
+                    }
+                }
 
                 const m4 = this._m4;
                 const mScale0 = this._mScale0;
@@ -1805,16 +1933,18 @@
                 let sObsUpdated = false;
                 let tObsUpdated = false;
 
+                const pPosX = this.player.mesh.position.x;
+                const pPosY = this.player.mesh.position.y;
+                const pPosZ = this.player.mesh.position.z;
+                const playerBottom = pPosY - 0.25;
+                const playerTop = pPosY + 0.25;
+
                 // Update Interactive Entities (reverse-iterate for safe removal)
                 for (let i = this.entities.length - 1; i >= 0; i--) {
                     const ent = this.entities[i];
 
-                    // Move entity first (always needed for scrolling)
-                    if (ent.userData.type === 'traffic') {
-                        ent.position.z += this.gm.gameSpeed * TRAFFIC_SPEED_MULT;
-                    } else {
-                        ent.position.z += this.gm.gameSpeed;
-                    }
+                    // Move entity
+                    ent.position.z += (ent.userData.type === 'traffic') ? (this.gm.gameSpeed * TRAFFIC_SPEED_MULT) : this.gm.gameSpeed;
 
                     // Garbage Collect past the player
                     if (ent.position.z > 15) {
@@ -1824,49 +1954,16 @@
                         continue;
                     }
 
-                    // Frustum culling: skip expensive logic/collision for off-screen entities
-                    const inView = ent.position.z > -150 && this._frustum.containsPoint(ent.position);
-
-                    if (inView) {
+                    // Simple proximity check instead of full Frustum culling
+                    if (ent.position.z > -150) {
                         this.updateEntityLogic(ent, timestamp);
-                        const hit = this.checkEntityCollisions(ent);
+                        const hit = this.checkEntityCollisions(ent, pPosX, pPosY, pPosZ, playerBottom, playerTop);
                         if (hit) {
                             this.handleEntityHit(ent, i);
                             continue;
                         }
-                    } else {
-                        // Still run minimal visual updates (coin spin etc) for entities about to enter view
-                        if (ent.position.z > -80) {
-                            this.updateEntityLogic(ent, timestamp);
-                        }
-                    }
-
-                    // Apply InstancedMesh Matrices
-                    if (ent.userData.isBatched) {
-                        m4.makeRotationY(ent.userData.baseRotationY || 0);
-                        m4.setPosition(ent.position.x, ent.position.y, ent.position.z);
-
-                        if (ent.userData.type === 'coin') {
-                            this.coinInst.setMatrixAt(ent.userData.instIdx, m4);
-                            if (ent.userData.shadowMesh) {
-                                ent.userData.shadowMesh.position.set(ent.position.x, 0.01, ent.position.z);
-                            }
-                            coinsUpdated = true;
-                        } else if (ent.userData.type === 'obstacle') {
-                            if (ent.userData.isTall) {
-                                this.tObsInst.setMatrixAt(ent.userData.instIdx, m4);
-                                tObsUpdated = true;
-                            } else {
-                                this.sObsInst.setMatrixAt(ent.userData.instIdx, m4);
-                                sObsUpdated = true;
-                            }
-                        }
                     }
                 }
-
-                if (coinsUpdated) this.coinInst.instanceMatrix.needsUpdate = true;
-                if (sObsUpdated) this.sObsInst.instanceMatrix.needsUpdate = true;
-                if (tObsUpdated) this.tObsInst.instanceMatrix.needsUpdate = true;
 
                 // If our frontier cursor slides passed WORLD_DEPTH boundary via scroll speed, we have room to spawn new segment out of bounds
                 this.nextPatternZ += this.gm.gameSpeed;
@@ -1881,31 +1978,17 @@
                 }
             } // END OF update()
             updateEntityLogic(ent, timestamp) {
-                if (ent.userData.type === 'coin') {
-                    if (ent.userData.isBatched) {
-                        ent.userData.baseRotationY += 0.05;
-                    } else {
-                        ent.rotation.y += 0.05;
-                    }
-                } else if (ent.userData.isPowerup) {
+                if (ent.userData.type === 'coin' || ent.userData.isPowerup) {
                     ent.rotation.y += 0.05;
                 } else if (ent.userData.type === 'ramp') {
                     ent.userData.arrow.rotation.y += 0.05;
-                    // Removed expensive Math.sin wobble
                 } else if (ent.userData.type === 'laser') {
-                    // Tick the blink interval timer, scaled by game speed and its random speed trait
-                    // The toggle interval needs adjusting downward so they blink quickly, say 60 ticks
                     ent.userData.timer += ent.userData.speedMod * (this.gm.gameSpeed / BASE_SPEED);
-
                     if (ent.userData.timer > 60) {
                         ent.userData.timer = 0;
                         ent.userData.isTop = !ent.userData.isTop;
                     }
-
-                    // Target Y heights
                     const targetY = ent.userData.isTop ? 1.2 : -0.5;
-
-                    // Rapidly lerp (30% per frame) towards the target position for snapping smoothness
                     ent.userData.beam.position.y += (targetY - ent.userData.beam.position.y) * 0.3;
                 }
 
@@ -1927,32 +2010,26 @@
                 }
             }
 
-            checkEntityCollisions(ent) {
-                const pPos = this.player.mesh.position;
+            checkEntityCollisions(ent, pPosX, pPosY, pPosZ, playerBottom, playerTop) {
                 const ePos = ent.position;
                 const type = ent.userData.type;
 
                 // 1. HORIZONTAL DISTANCES
-                const dx = pPos.x - ePos.x;
-                const dz = pPos.z - ePos.z;
+                const dx = pPosX - ePos.x;
+                const dz = pPosZ - ePos.z;
                 const distSq = dx * dx + dz * dz;
-
-                // 2. VERTICAL RANGE (Shrunk for fairness)
-                const playerBottom = pPos.y - 0.25;
-                const playerTop = pPos.y + 0.25;
 
                 // --- NAIVE RADIAL LOGIC ---
 
                 if (type === 'obstacle') {
-                    const wallRadius = 1.1;
-                    const wallHeight = ent.userData.isTall ? 3.0 : 0.8;
-                    if (distSq < wallRadius * wallRadius) {
+                    const wallHeight = ent.userData.isTall ? 3.0 : 1.0;
+                    if (Math.abs(dx) < 1.1 && Math.abs(dz) < 0.5) {
                         if (playerBottom < wallHeight) return true;
                     }
                 }
 
                 else if (type === 'traffic') {
-                    if (Math.abs(dx) < 0.9 && Math.abs(dz) < 2.5) {
+                    if (Math.abs(dx) < 0.9 && Math.abs(dz) < 1.25) {
                         if (playerBottom < 1.1) return true;
                     }
                 }
@@ -1966,7 +2043,7 @@
 
                 else if (type === 'ramp') {
                     if (Math.abs(dz) < 1.5 && Math.abs(dx) < 1.2) {
-                        if (pPos.y < 1.2) {
+                        if (pPosY < 1.2) {
                             this.player.isJumping = true;
                             this.player.jumpVelocity = JUMP_FORCE * RAMP_BOOST_MULTIPLIER;
                         }
@@ -1975,7 +2052,8 @@
 
                 else if (type === 'coin' || ent.userData.isPowerup) {
                     const collectRadius = ent.userData.isTrackedByMagnet ? 1.8 : 1.2;
-                    if (pPos.distanceToSquared(ePos) < collectRadius * collectRadius) return true;
+                    const dy = pPosY - ePos.y;
+                    if ((distSq + dy * dy) < collectRadius * collectRadius) return true;
                 }
 
                 return false;
@@ -2000,34 +2078,22 @@
                 this.entities.pop();
             }
             recycleEntity(ent) {
-                if (ent.userData.isBatched) {
-                    const m0 = this._mScale0; // Reuse hoisted matrix
-                    if (ent.userData.type === 'coin') {
-                        this.coinInst.setMatrixAt(ent.userData.instIdx, m0);
-                        this.coinInst.instanceMatrix.needsUpdate = true;
-                        if (ent.userData.shadowMesh) {
-                            ent.userData.shadowMesh.visible = false;
-                            this.coinShadowPool.push(ent.userData.shadowMesh);
-                        }
-                    } else if (ent.userData.type === 'obstacle') {
-                        if (ent.userData.isTall) {
-                            this.tObsInst.setMatrixAt(ent.userData.instIdx, m0);
-                            this.tObsInst.instanceMatrix.needsUpdate = true;
-                        } else {
-                            this.sObsInst.setMatrixAt(ent.userData.instIdx, m0);
-                            this.sObsInst.instanceMatrix.needsUpdate = true;
-                        }
+                ent.visible = false;
+                if (ent.userData.type === 'coin') {
+                    if (ent.userData.shadowMesh) {
+                        ent.userData.shadowMesh.visible = false;
+                        this.coinShadowPool.push(ent.userData.shadowMesh);
+                        ent.userData.shadowMesh = null;
                     }
-
-                    // Cleanup references to prevent memory leaks in the pool
-                    ent.userData.shadowMesh = null;
-                    this.logicalPool.push(ent);
+                    this.pools.coin.push(ent);
+                } else if (ent.userData.type === 'obstacle') {
+                    if (ent.userData.isTall) {
+                        this.pools.tObs.push(ent);
+                    } else {
+                        this.pools.sObs.push(ent);
+                    }
                 } else {
-                    ent.visible = false;
                     let poolKey = ent.userData.type;
-                    if (poolKey === 'obstacle') {
-                        poolKey = ent.userData.isTall ? 'obstacle_tall' : 'obstacle_short';
-                    }
                     if (this.pools[poolKey]) {
                         this.pools[poolKey].push(ent);
                     } else {
@@ -2388,11 +2454,9 @@
                 this.renderer = new THREE.WebGLRenderer({ antialias: true });
                 this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
                 this.renderer.setSize(window.innerWidth, window.innerHeight);
-                this.renderer.shadowMap.enabled = true;
-                this.renderer.shadowMap.type = THREE.PCFShadowMap;
+                this.renderer.shadowMap.enabled = false;
                 document.getElementById('game-container').appendChild(this.renderer.domElement);
 
-                this.initPostProcessing();
                 this.initEnvironment();
 
                 this.player = new Player(this.scene, this.ui, this.renderer);
@@ -2407,32 +2471,6 @@
                 window.addEventListener('resize', () => this.onWindowResize());
             }
 
-            initPostProcessing() {
-                const pixelRatio = this.renderer.getPixelRatio();
-                const renderWidth = Math.floor(window.innerWidth * pixelRatio);
-                const renderHeight = Math.floor(window.innerHeight * pixelRatio);
-
-                const renderTarget = new THREE.WebGLRenderTarget(renderWidth, renderHeight, {
-                    type: THREE.HalfFloatType,
-                    format: THREE.RGBAFormat
-                });
-
-                this.renderScene = new THREE.RenderPass(this.scene, this.camera);
-                this.bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(renderWidth / 4, renderHeight / 4), 1.5, 0.4, 0.85);
-                this.bloomPass.threshold = 2.0;
-                this.bloomPass.strength = 0.8;
-                this.bloomPass.radius = 0.4;
-
-                this.fxaaPass = new THREE.ShaderPass(THREE.FXAAShader);
-                this.fxaaPass.material.uniforms['resolution'].value.x = 1 / renderWidth;
-                this.fxaaPass.material.uniforms['resolution'].value.y = 1 / renderHeight;
-
-                this.composer = new THREE.EffectComposer(this.renderer, renderTarget);
-                this.composer.addPass(this.renderScene);
-                this.composer.addPass(this.bloomPass);
-                this.composer.addPass(this.fxaaPass);
-            }
-
             initEnvironment() {
                 // Hemisphere Light — warm sky, cool ground for natural shading
                 const hemiLight = new THREE.HemisphereLight(0xffeedd, 0x8899aa, 0.6);
@@ -2442,15 +2480,6 @@
                 const sunPosition = new THREE.Vector3(-15, 30, -20);
                 const dirLight = new THREE.DirectionalLight(0xfff4e0, 1.0);
                 dirLight.position.copy(sunPosition);
-                dirLight.castShadow = true;
-                dirLight.shadow.mapSize.width = 1024;
-                dirLight.shadow.mapSize.height = 1024;
-                dirLight.shadow.camera.left = -30;
-                dirLight.shadow.camera.right = 30;
-                dirLight.shadow.camera.top = 30;
-                dirLight.shadow.camera.bottom = -30;
-                dirLight.shadow.camera.near = 0.5;
-                dirLight.shadow.camera.far = 120;
                 this.scene.add(dirLight);
 
                 // Visible Sun — glowing sphere at the light source
@@ -2471,7 +2500,6 @@
                 const ground = new THREE.Mesh(groundGeo, this.groundMat);
                 ground.rotation.x = -Math.PI / 2;
                 ground.position.y = -0.05;
-                ground.receiveShadow = true;
                 this.scene.add(ground);
 
                 // Central Path
@@ -2479,7 +2507,6 @@
                 this.pathMat = new THREE.MeshLambertMaterial({ color: 0x8b5a2b });
                 const path = new THREE.Mesh(pathGeo, this.pathMat);
                 path.rotation.x = -Math.PI / 2;
-                path.receiveShadow = true;
                 this.scene.add(path);
 
                 // Lane Dividers
@@ -2487,9 +2514,11 @@
                 const lineMat = new THREE.MeshBasicMaterial({ color: 0xffddaa, transparent: true, opacity: 0.4 });
                 const lineLeft = new THREE.Mesh(lineGeo, lineMat);
                 lineLeft.position.set(-1.25, 0.02, 0); // -LANE_WIDTH / 2
+                lineLeft.receiveShadow = true;
                 this.scene.add(lineLeft);
                 const lineRight = new THREE.Mesh(lineGeo, lineMat);
                 lineRight.position.set(1.25, 0.02, 0); // LANE_WIDTH / 2
+                lineRight.receiveShadow = true;
                 this.scene.add(lineRight);
             }
 
@@ -2514,19 +2543,6 @@
                 this.camera.updateProjectionMatrix();
                 this.renderer.setSize(window.innerWidth, window.innerHeight);
 
-                if (this.composer) {
-                    const pixelRatio = this.renderer.getPixelRatio();
-                    const renderWidth = Math.floor(window.innerWidth * pixelRatio);
-                    const renderHeight = Math.floor(window.innerHeight * pixelRatio);
-
-                    this.composer.setSize(renderWidth, renderHeight);
-
-                    if (this.fxaaPass) {
-                        this.fxaaPass.material.uniforms['resolution'].value.x = 1 / renderWidth;
-                        this.fxaaPass.material.uniforms['resolution'].value.y = 1 / renderHeight;
-                    }
-                }
-
                 // Camera changed shape, force Frustum to recalculate next frame
                 if (this.spawner) {
                     this.spawner._frustumCached = false;
@@ -2547,7 +2563,7 @@
                 // Infinite scenery pan just to look cool behind the menus
                 this.spawner.scrollCells(0.2, null);
 
-                this.composer.render();
+                this.renderer.render(this.scene, this.camera);
             }
 
             applyUpgrades() {
@@ -2592,18 +2608,18 @@
                         window.shopManager.checkRunStats(this.score, this.distance, this.coinsCollected);
                         this.hasPaidOut = true;
                     }
-                    this.composer.render(); // render final frame
+                    this.renderer.render(this.scene, this.camera);
                     return;
                 }
 
                 // Process logic at fixed tick rate, independent of monitor refresh
-                while (this.accumulator >= this.timeStep) {
+                let ticks = 0;
+                while (this.accumulator >= this.timeStep && ticks < 10) {
+                    ticks++;
                     const mult = window.shopManager.startSpeedMult || 1.0;
 
-                    // Fast discrete step difficulty scaling
-                    const diffTier = Math.min(Math.floor(this.distance / 1000), 10);
-                    const stepValues = [0, 3.5, 3.8, 4.1, 4.3, 4.5, 4.6, 4.7, 4.8, 4.9, 5.0];
-                    const speedScale = stepValues[diffTier] * this.speedScaleFactor;
+                    // Continuous sqrt-log difficulty scaling
+                    const speedScale = Math.sqrt(Math.log10(this.distance + 1)) * 2.5 * this.speedScaleFactor;
                     this.gameSpeed = (BASE_SPEED + speedScale) * mult;
 
                     // Allow the user's manual BASE_SPEED to act as the cap floor so it doesn't instantly decelerate
@@ -2663,7 +2679,7 @@
                     this.accumulator -= this.timeStep;
                 }
 
-                this.composer.render();
+                this.renderer.render(this.scene, this.camera);
             }
         }
 
